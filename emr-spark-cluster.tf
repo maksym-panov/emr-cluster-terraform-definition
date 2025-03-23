@@ -70,7 +70,7 @@ resource "aws_iam_instance_profile" "emr_instance_profile" {
 # Create EMR Cluster itself
 resource "aws_emr_cluster" "spark_hadoop_cluster" {
   name           = "EMR Spark+Hadoop Cluster"
-  release_label  = "emr-7.8.0" # Latest stable EMR release as on 23.03.2025
+  release_label  = "emr-7.8.0" # Latest stable EMR release as of 23.03.2025
   applications   = ["Spark", "Hadoop"]
   service_role   = aws_iam_role.emr_service_role.arn
 
@@ -80,49 +80,37 @@ resource "aws_emr_cluster" "spark_hadoop_cluster" {
   }
 
   # Master nodes group (always only 1 instance)
+  # Selected instance type - r5.2xlarge is a memory-optimized type of EC2 instance
+  #     - 4 vCPU
+  #     - 16 GB RAM
+  # Set another type if needed:
+  # https://aws.amazon.com/ec2/pricing/on-demand/
   master_instance_group {
     name          = "Master Node Instance Group"
     instance_type = "m5.xlarge"
   }
 
   # Core nodes group
-  # r5.2xlarge - RAM-optimized EC2 instance type
+  # Selected instance type - r5.2xlarge is a memory-optimized type of EC2 instance
   #     - 8 vCPU
   #     - 64 GB RAM
-  # Change "r5.2xlarge" if needed - https://aws.amazon.com/ec2/pricing/on-demand/)
+  # Set another type if needed:
+  # https://aws.amazon.com/ec2/pricing/on-demand/
   core_instance_group {
     name           = "EMR Core Instance Group"
     instance_type  = "r5.2xlarge"
-    instance_count = 1 # Configure base number of instances as needed
-
-    # Increase number of core nodes if the load is too high (more than 75% of CPU is in use)
-    auto_scaling_policy {
-      constraints {
-        min_capacity = 1  # Minimum number of instances
-        max_capacity = 10 # Maximum number of instances
-      }
-      rules {
-        name        = "Scale Up Rule"
-        description = "Scale up when CPU utilization is high"
-        action {
-          simple_scaling_policy_configuration {
-            adjustment_type = "ChangeInCapacity"
-            scaling_adjustment = 1
-            cool_down = 120
-          }
-        }
-        trigger {
-          cloud_watch_alarm_definition {
-            comparison_operator = "GREATER_THAN"
-            metric_name = "CPUUtilization"
-            period = 120
-            statistic = "AVERAGE"
-            threshold = 75
-            evaluation_periods = 2
-          }
-        }
-      }
-    }
   }
+}
 
+# Enable auto scaling for EMR cluster
+# https://docs.aws.amazon.com/emr/latest/ManagementGuide/emr-managed-scaling.html
+# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/emr_managed_scaling_policy
+resource "aws_emr_managed_scaling_policy" "core_managed_scaling" {
+  cluster_id = aws_emr_cluster.spark_hadoop_cluster.id
+
+  compute_limits {
+    unit_type                       = "Instances"
+    minimum_capacity_units          = 1
+    maximum_capacity_units          = 10
+  }
 }
