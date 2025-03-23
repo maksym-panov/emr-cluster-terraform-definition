@@ -1,2 +1,1 @@
-# emr-cluster-terraform-definition
-Terraform-based AWS EMR cluster configuration
+# AWS EMR Cluster Terraform Definition
