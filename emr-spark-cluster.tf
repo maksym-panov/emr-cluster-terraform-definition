@@ -1,16 +1,60 @@
 provider "aws" {
   region = "eu-central-1" # Frankfurt - closest to Ukraine, which means minimal latency
-  access_key = AWS_ACCESS_KEY # Expects AWS_ACCESS_KEY environment variable to be set
-  secret_key = AWS_SECRET_KEY # Expects AWS_SECRET_KEY environment variable to be set
+  profile = "default"     # Set your profile
+}
+
+# Create the VPC for the EMR cluster
+resource "aws_vpc" "emr_vpc" {
+  cidr_block = "10.0.0.0/16"
+
+  tags = {
+    Name = "EMRVPC"
+  }
+}
+
+# Create a subnet in the VPC for the EMR cluster
+resource "aws_subnet" "emr_subnet" {
+  vpc_id                  = aws_vpc.emr_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "eu-central-1a"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "EMRSubnet"
+  }
+}
+
+# Create an Internet Gateway for the VPC
+resource "aws_internet_gateway" "emr_igw" {
+  vpc_id = aws_vpc.emr_vpc.id
+
+  tags = {
+    Name = "EMRInternetGateway"
+  }
+}
+
+# Create a route table and associate it with the subnet
+resource "aws_route_table" "emr_route_table" {
+  vpc_id = aws_vpc.emr_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.emr_igw.id
+  }
+
+  tags = {
+    Name = "EMRRouteTable"
+  }
+}
+
+resource "aws_route_table_association" "emr_route_table_assoc" {
+  subnet_id      = aws_subnet.emr_subnet.id
+  route_table_id = aws_route_table.emr_route_table.id
 }
 
 # S3 bucket for Spark scripts
 resource "aws_s3_bucket" "emr-spark-scripts-bucket" {
   bucket = "emr-spark-scripts-bucket"
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 # IAM service role for EMR Cluster
@@ -77,6 +121,7 @@ resource "aws_emr_cluster" "spark_hadoop_cluster" {
   # Make all EC2 instances in the cluster have emr_instance_profile
   ec2_attributes {
     instance_profile = aws_iam_instance_profile.emr_instance_profile.arn
+    subnet_id = aws_subnet.emr_subnet.id
   }
 
   # Master nodes group (always only 1 instance)
