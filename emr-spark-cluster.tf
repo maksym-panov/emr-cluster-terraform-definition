@@ -3,18 +3,29 @@ provider "aws" {
   profile = "default"     # Set your profile
 }
 
-# Create the VPC for the EMR cluster
-resource "aws_vpc" "emr_vpc" {
-  cidr_block = "10.0.0.0/16"
-
-  tags = {
-    Name = "EMRVPC"
+# Look up the pre-existing VPC by name tag instead of owning it.
+# This prevents terraform destroy from trying to delete the VPC,
+# which eliminates the 20-minute timeout and DependencyViolation errors
+# caused by EMR-owned security groups left inside it.
+data "aws_vpc" "emr_vpc" {
+  filter {
+    name   = "tag:Name"
+    values = ["EMRVPC"]
   }
 }
 
-# Create a subnet in the VPC for the EMR cluster
+resource "aws_internet_gateway" "emr_igw" {
+  vpc_id = data.aws_vpc.emr_vpc.id
+
+  tags = {
+    Name = "EMRIGW"
+  }
+}
+
+# Create a subnet inside the existing VPC.
+# Terraform owns this resource and will delete it cleanly on destroy.
 resource "aws_subnet" "emr_subnet" {
-  vpc_id                  = aws_vpc.emr_vpc.id
+  vpc_id                  = data.aws_vpc.emr_vpc.id
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "eu-central-1a"
   map_public_ip_on_launch = true
@@ -24,18 +35,9 @@ resource "aws_subnet" "emr_subnet" {
   }
 }
 
-# Create an Internet Gateway for the VPC
-resource "aws_internet_gateway" "emr_igw" {
-  vpc_id = aws_vpc.emr_vpc.id
-
-  tags = {
-    Name = "EMRInternetGateway"
-  }
-}
-
-# Create a route table and associate it with the subnet
+# Route table pointing to the existing IGW.
 resource "aws_route_table" "emr_route_table" {
-  vpc_id = aws_vpc.emr_vpc.id
+  vpc_id = data.aws_vpc.emr_vpc.id
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -54,7 +56,23 @@ resource "aws_route_table_association" "emr_route_table_assoc" {
 
 # S3 bucket for Spark scripts
 resource "aws_s3_bucket" "emr-spark-scripts-bucket" {
-  bucket = "emr-spark-scripts-bucket"
+  bucket        = "emr-spark-scripts-bucket"
+  force_destroy = true
+}
+
+resource "null_resource" "s3_cleanup" {
+  triggers = {
+    bucket = aws_s3_bucket.emr-spark-scripts-bucket.id
+  }
+
+  depends_on = [aws_s3_bucket.emr-spark-scripts-bucket]
+
+  provisioner "local-exec" {
+    when       = destroy
+    on_failure = continue
+    command    = "aws s3 rm s3://${self.triggers.bucket} --recursive --profile default"
+    interpreter = ["bash", "-c"]
+  }
 }
 
 # IAM service role for EMR Cluster
@@ -143,19 +161,15 @@ resource "aws_emr_cluster" "spark_hadoop_cluster" {
   # https://aws.amazon.com/ec2/pricing/on-demand/
   core_instance_group {
     name           = "EMR Core Instance Group"
-    instance_type  = "r5.2xlarge"
+    instance_type  = var.core_instance_type
+    instance_count = var.core_count
+  }
+
+  lifecycle {
+    ignore_changes = [core_instance_group[0].instance_count]
   }
 }
 
-# Enable auto scaling for EMR cluster
-# https://docs.aws.amazon.com/emr/latest/ManagementGuide/emr-managed-scaling.html
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/emr_managed_scaling_policy
-resource "aws_emr_managed_scaling_policy" "core_managed_scaling" {
-  cluster_id = aws_emr_cluster.spark_hadoop_cluster.id
-
-  compute_limits {
-    unit_type                       = "Instances"
-    minimum_capacity_units          = 1
-    maximum_capacity_units          = 10
-  }
-}
+# Fixed On-Demand task node — avoids Spot quota issues from managed scaling.
+# Managed scaling always provisions task nodes as Spot; since student accounts
+# typically have low Spot quotas, we use a static task group instead.

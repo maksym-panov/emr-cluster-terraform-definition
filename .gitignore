@@ -38,3 +38,19 @@ override.tf.json
 terraform.rc
 
 .idea
+
+# Local cluster power configuration — do not commit.
+# Commit cluster.env.example instead.
+cluster.env
+
+# WordCount job output downloaded locally
+wordcount_result/
+
+# LaTeX build artefacts (EMR-Guide.pdf itself is committed)
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
